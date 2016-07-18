@@ -6,11 +6,14 @@ import numpy as np
 from math import floor
 
 class Pixelset:
-    def __init__(self,raster):
+    def __init__(self,raster,geom=None):
         self.pixels = dict()
         self.raster = raster
         #                   rowmin, rowmax, colmin, colmax
         self.boundingbox = [raster.ny, -1, raster.nx, -1]
+
+        if geom!=None:
+            self.updatePixelsShape(geom)
 
     def getPixel(self,rowcol):
         row = rowcol[0]
@@ -30,7 +33,7 @@ class Pixelset:
         if row not in self.pixels.keys():
             self.pixels[row] = dict()
         if col in self.pixels[row].keys():
-            raise exception
+            raise Exception
 
         self.pixels[row][col] = pixel
 
@@ -42,6 +45,74 @@ class Pixelset:
             self.boundingbox[2] = col
         if col > self.boundingbox[3]:
             self.boundingbox[3] = col
+
+    def updatePixelsShape(self, geom):
+        #import pdb; pdb.set_trace()
+        for i in range(geom.GetGeometryCount()):
+            ring = geom.GetGeometryRef(i)
+            prevPixelNo = self.raster.pixelNumber(ring.GetPoint(0))
+            currentPixel = self.getPixel(prevPixelNo)
+            for j in range(0, ring.GetPointCount()):
+                pixelNo = self.raster.pixelNumber(ring.GetPoint(j))
+
+                if pixelNo != prevPixelNo:
+                    self.updatePixelsEdge(ring.GetPoint(j-1), ring.GetPoint(j))
+                    currentPixel = self.getPixel(pixelNo)
+                    prevPixelNo = pixelNo
+                currentPixel.addCorner(ring.GetPoint(j))
+        self.addEnclosedPixels(geom)
+        #self.updateMaskMatrix(self.ma)
+
+    def updatePixelsEdge(self,geom1,geom2):
+        pixelNo1 = self.raster.pixelNumber(geom1)
+        pixelNo2 = self.raster.pixelNumber(geom2)
+        pixel1 = self.getPixel(pixelNo1)
+        #pixel2 = self.getPixel(pixelNo2)
+
+        #Hur många skärningar i resp led letar vi efter?
+        nox = pixelNo2[1] - pixelNo1[1]
+        noy = pixelNo2[0] - pixelNo1[0]
+
+        if nox != 0:
+            sigx = nox/abs(nox)
+            # Riktningskoeff för linjen
+            kx = (geom1[1]-geom2[1])/(geom1[0]-geom2[0])
+        if noy != 0:
+            sigy = noy/abs(noy)
+            # inv rikningskoeff för att undvika div med noll
+            ky = (geom1[0]-geom2[0])/(geom1[1]-geom2[1])
+
+        nox = abs(nox)
+        noy = abs(noy)
+        
+        #Räkna från mittpunkten av pixel1
+        (x0,y0) = pixel1.getCenterCoords()
+
+        for i in range(nox):
+            x = x0 + (i+0.5)*self.raster.sx*sigx
+            y = kx*(x-geom1[0]) + geom1[1]
+            # Get row number from pixelNumber(). Dont trust col nr as it is on
+            # an edge.
+            (row,scrat) = self.raster.pixelNumber((x,y))
+            col1 = pixelNo1[1] + i*sigx
+            col2 = pixelNo1[1] + (i+1)*sigx
+            p1 = self.getPixel((row,col1))
+            p1.addEdge((x,y),3+sigx)
+            p2 = self.getPixel((row,col2))
+            p2.addEdge((x,y),3-sigx)
+
+        for i in range(noy):
+            y = y0 + (i+0.5)*self.raster.sy*sigy
+            x = ky*(y-geom1[1]) + geom1[0]
+            # Get col number from pixelNumber(). Dont trust row nr as it is on
+            # an edge.
+            (scrat,col) = self.raster.pixelNumber((x,y))
+            row1 = pixelNo1[0] + i*sigy
+            row2 = pixelNo1[0] + (i+1)*sigy
+            p1 = self.getPixel((row1,col))
+            p1.addEdge((x,y),2+sigy)
+            p2 = self.getPixel((row2,col))
+            p2.addEdge((x,y),2-sigy)
 
     def addEnclosedPixels(self, geom):
         for i in range(self.boundingbox[0]+1, self.boundingbox[1]):
@@ -72,7 +143,7 @@ class Pixelset:
             
 class Raster:
     def __init__(self, 
-                 filename = "test3.asc",
+                 filename = "test6.asc",
                  ox = 222000,
                  oy = 7674000,
                  sx = 1000,
@@ -111,74 +182,10 @@ class Raster:
                 ofh.write(' %d' % val)
             ofh.write("\n")
         ofh.close()
-
+    
     def updatePixelsShape(self, geom):
-        pixels = Pixelset(self)
-        for i in range(geom.GetGeometryCount()):
-            ring = geom.GetGeometryRef(i)
-            prevPixelNo = self.pixelNumber(ring.GetPoint(0))
-            currentPixel = pixels.getPixel(prevPixelNo)
-            for j in range(0, ring.GetPointCount()):
-                pixelNo = self.pixelNumber(ring.GetPoint(j))
-
-                if pixelNo != prevPixelNo:
-                    self.updatePixelsEdge(pixels, ring.GetPoint(j-1), ring.GetPoint(j))
-                    currentPixel = pixels.getPixel(pixelNo)
-                    prevPixelNo = pixelNo
-                currentPixel.addCorner(ring.GetPoint(j))
-        pixels.addEnclosedPixels(geom)
+        pixels = Pixelset(self, geom)
         pixels.updateMaskMatrix(self.ma)
-
-    def updatePixelsEdge(self,pixels,geom1,geom2):
-        pixelNo1 = self.pixelNumber(geom1)
-        pixelNo2 = self.pixelNumber(geom2)
-        pixel1 = pixels.getPixel(pixelNo1)
-        #pixel2 = pixels.getPixel(pixelNo2)
-
-        #Hur många skärningar i resp led letar vi efter?
-        nox = pixelNo2[1] - pixelNo1[1]
-        noy = pixelNo2[0] - pixelNo1[0]
-
-        if nox != 0:
-            sigx = nox/abs(nox)
-            # Riktningskoeff för linjen
-            kx = (geom1[1]-geom2[1])/(geom1[0]-geom2[0])
-        if noy != 0:
-            sigy = noy/abs(noy)
-            # inv rikningskoeff för att undvika div med noll
-            ky = (geom1[0]-geom2[0])/(geom1[1]-geom2[1])
-
-        nox = abs(nox)
-        noy = abs(noy)
-        
-        #Räkna från mittpunkten av pixel1
-        (x0,y0) = pixel1.getCenterCoords()
-
-        for i in range(nox):
-            x = x0 + (i+0.5)*self.sx*sigx
-            y = kx*(x-geom1[0]) + geom1[1]
-            # Get row number from pixelNumber(). Dont trust col nr as it is on
-            # an edge.
-            (row,scrat) = self.pixelNumber((x,y))
-            col1 = pixelNo1[1] + i*sigx
-            col2 = pixelNo1[1] + (i+1)*sigx
-            p1 = pixels.getPixel((row,col1))
-            p1.addEdge((x,y),3+sigx)
-            p2 = pixels.getPixel((row,col2))
-            p2.addEdge((x,y),3-sigx)
-
-        for i in range(noy):
-            y = y0 + (i+0.5)*self.sy*sigy
-            x = ky*(y-geom1[1]) + geom1[0]
-            # Get col number from pixelNumber(). Dont trust row nr as it is on
-            # an edge.
-            (scrat,col) = self.pixelNumber((x,y))
-            row1 = pixelNo1[0] + i*sigy
-            row2 = pixelNo1[0] + (i+1)*sigy
-            p1 = pixels.getPixel((row1,col))
-            p1.addEdge((x,y),2+sigy)
-            p2 = pixels.getPixel((row2,col))
-            p2.addEdge((x,y),2-sigy)
 
     def pixelNumber(self, point):
         row = int(floor((point[1]-self.oy)/self.sy))
