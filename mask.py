@@ -44,29 +44,17 @@ class Pixelset:
             self.boundingbox[3] = col
 
     def addEnclosedPixels(self, geom):
-        candidates = dict()
-        #import pdb; pdb.set_trace()
         for i in range(self.boundingbox[0]+1, self.boundingbox[1]):
             if i in self.pixels.keys():
-                keys = self.pixels[i].keys()
-                cands = list()
-                prel = list()
-                for col in range(keys[0],keys[-1]):
-                    if col+1 not in keys:
-                        prel.append(col)
-                    elif prel:
-                        for val in prel:
-                            cands.append(val)
-                        prel = list()
+                sortedkeys = sorted(self.pixels[i].keys())
+                envelope = range(sortedkeys[0], sortedkeys[-1])
+                cands = filter(lambda x:x not in sortedkeys,envelope)
                 for cand in cands:
                     pixcoords = self.raster.calcPixelCoordinates(i,cand)
                     pix = Pixel(i,cand,pixcoords)
                     centerpt = pix.getCenterPoint(self.raster.srs)
-                    print i, cand, pixcoords
-                    import pdb; pdb.set_trace()
                     if centerpt.Within(geom):
-                        self.addPixel(pix)
-                        print hit
+                        self.addPixel(pix,i,cand)
     
     # Unused, could increase speed if incorporated
     #def findLooseEnd(self, candidates):
@@ -84,7 +72,7 @@ class Pixelset:
             
 class Raster:
     def __init__(self, 
-                 filename = "test5.asc",
+                 filename = "test3.asc",
                  ox = 222000,
                  oy = 7674000,
                  sx = 1000,
@@ -126,17 +114,18 @@ class Raster:
 
     def updatePixelsShape(self, geom):
         pixels = Pixelset(self)
-        prevPixelNo = self.pixelNumber(geom.GetPoint(0))
-        currentPixel = pixels.getPixel(prevPixelNo)
-        corners = list()
-        for i in range(0, geom.GetPointCount()):
-            pixelNo = self.pixelNumber(geom.GetPoint(i))
+        for i in range(geom.GetGeometryCount()):
+            ring = geom.GetGeometryRef(i)
+            prevPixelNo = self.pixelNumber(ring.GetPoint(0))
+            currentPixel = pixels.getPixel(prevPixelNo)
+            for j in range(0, ring.GetPointCount()):
+                pixelNo = self.pixelNumber(ring.GetPoint(j))
 
-            if pixelNo != prevPixelNo:
-                self.updatePixelsEdge(pixels, geom.GetPoint(i-1), geom.GetPoint(i))
-                currentPixel = pixels.getPixel(pixelNo)
-                prevPixelNo = pixelNo
-            currentPixel.addCorner(geom.GetPoint(i))
+                if pixelNo != prevPixelNo:
+                    self.updatePixelsEdge(pixels, ring.GetPoint(j-1), ring.GetPoint(j))
+                    currentPixel = pixels.getPixel(pixelNo)
+                    prevPixelNo = pixelNo
+                currentPixel.addCorner(ring.GetPoint(j))
         pixels.addEnclosedPixels(geom)
         pixels.updateMaskMatrix(self.ma)
 
@@ -306,10 +295,11 @@ def maskFile(inShapeFile,outRasterFile):
 
     for i in range(inLayer.GetFeatureCount()):
         inFeature = inLayer.GetFeature(i)
-        geometries = inFeature.GetGeometryRef()
-        for j in range(geometries.GetGeometryCount()):
-            shapelim = geometries.GetGeometryRef(j)
-            maskArray.updatePixelsShape(shapelim)
+        geom = inFeature.GetGeometryRef()
+        maskArray.updatePixelsShape(geom)
+        #for j in range(geom.GetGeometryCount()):
+        #    shapelim = geom.GetGeometryRef(j)
+        #    maskArray.updatePixelsShape(shapelim)
 
     #import pdb; pdb.set_trace()
     print "Printing result to file", maskArray.filename
