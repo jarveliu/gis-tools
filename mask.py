@@ -9,6 +9,8 @@ class Pixelset:
     def __init__(self,raster):
         self.pixels = dict()
         self.raster = raster
+        #                   rowmin, rowmax, colmin, colmax
+        self.boundingbox = [raster.ny, -1, raster.nx, -1]
 
     def getPixel(self,rowcol):
         row = rowcol[0]
@@ -21,9 +23,58 @@ class Pixelset:
         else: 
             pixcoords = self.raster.calcPixelCoordinates(row,col)
             pix = Pixel(row,col,pixcoords)
-            self.pixels[row][col] = pix
-            
+            self.addPixel(pix,row,col)
         return pix
+    
+    def addPixel(self,pixel,row,col):
+        if row not in self.pixels.keys():
+            self.pixels[row] = dict()
+        if col in self.pixels[row].keys():
+            raise exception
+
+        self.pixels[row][col] = pixel
+
+        if row < self.boundingbox[0]: 
+            self.boundingbox[0] = row
+        if row > self.boundingbox[1]: 
+            self.boundingbox[1] = row
+        if col < self.boundingbox[2]:
+            self.boundingbox[2] = col
+        if col > self.boundingbox[3]:
+            self.boundingbox[3] = col
+
+    def addEnclosedPixels(self, geom):
+        candidates = dict()
+        #import pdb; pdb.set_trace()
+        for i in range(self.boundingbox[0]+1, self.boundingbox[1]):
+            if i in self.pixels.keys():
+                keys = self.pixels[i].keys()
+                cands = list()
+                prel = list()
+                for col in range(keys[0],keys[-1]):
+                    if col+1 not in keys:
+                        prel.append(col)
+                    elif prel:
+                        for val in prel:
+                            cands.append(val)
+                        prel = list()
+                for cand in cands:
+                    pixcoords = self.raster.calcPixelCoordinates(i,cand)
+                    pix = Pixel(i,cand,pixcoords)
+                    centerpt = pix.getCenterPoint(self.raster.srs)
+                    print i, cand, pixcoords
+                    import pdb; pdb.set_trace()
+                    if centerpt.Within(geom):
+                        self.addPixel(pix)
+                        print hit
+    
+    # Unused, could increase speed if incorporated
+    #def findLooseEnd(self, candidates):
+    #    for i,row in candidate.iteritems():
+    #        for col in row:
+    #            self.lookForNeighbours(i,col)
+
+            
 
     def updateMaskMatrix(self,ma):
         for (row,rowdict) in self.pixels.iteritems():
@@ -33,13 +84,14 @@ class Pixelset:
             
 class Raster:
     def __init__(self, 
-                 filename = "test4.asc",
+                 filename = "test5.asc",
                  ox = 222000,
                  oy = 7674000,
                  sx = 1000,
                  sy = -1000,
                  nx = 740,
-                 ny = 1570):
+                 ny = 1570,
+                 srs = None):
         self.filename = filename
         self.ox = ox
         self.oy = oy
@@ -47,6 +99,10 @@ class Raster:
         self.sy = sy
         self.nx = nx
         self.ny = ny
+        if srs == None:
+            srs = osr.SpatialReference()
+            srs.SetWellKnownGeogCS("EPSG:3006")
+        self.srs = srs
 
         self.ma = np.zeros( (ny,nx) )
         #self.pixels = Pixelset(self)
@@ -81,6 +137,7 @@ class Raster:
                 currentPixel = pixels.getPixel(pixelNo)
                 prevPixelNo = pixelNo
             currentPixel.addCorner(geom.GetPoint(i))
+        pixels.addEnclosedPixels(geom)
         pixels.updateMaskMatrix(self.ma)
 
     def updatePixelsEdge(self,pixels,geom1,geom2):
@@ -129,8 +186,6 @@ class Raster:
             (scrat,col) = self.pixelNumber((x,y))
             row1 = pixelNo1[0] + i*sigy
             row2 = pixelNo1[0] + (i+1)*sigy
-            if col < 0:
-                import pdb; pdb.set_trace()
             p1 = pixels.getPixel((row1,col))
             p1.addEdge((x,y),2+sigy)
             p2 = pixels.getPixel((row2,col))
@@ -183,6 +238,13 @@ class Pixel:
         yc = self.y0 + self.sy/2
         return xc,yc
 
+    def getCenterPoint(self,srs):
+        (x,y) = self.getCenterCoords()
+        pt = ogr.Geometry(ogr.wkbPoint)
+        pt.AssignSpatialReference(srs)
+        pt.SetPoint(0, x, y)
+        return pt
+
     def addCorner(self,coords):
         self.cornerpoints.append(len(self.points))
         self.points.append(coords)
@@ -190,7 +252,30 @@ class Pixel:
     def addEdge(self,coords,edge):
         self.edgepoints.append(len(self.points))
         self.points.append(coords)
+
+    def setEnclosedPartial(self,partial):
+        self.enclosedArea = self.getArea() * partial
+
+    def getSquarePolygon(self):
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint_2D(x0,y0)
+        ring.AddPoint_2D(x0+sx,y0)
+        ring.AddPoint_2D(x0+sx,y0+sy)
+        ring.AddPoint_2D(x0,y0+sy)
+        ring.AddPoint_2D(x0,y0)
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+        return poly
+
+    def getEnclosedPolygon(self,geom):
+        squarePoly = self.getSquarePolygon()
+        return squarePoly.Intersection(geom)
+
+    def getEnclosedArea(self,geom):
+        return self.getEnclosedPolygon(geom).GetArea()
         
+    def getArea(self):
+        return abs(sx*sy)
 
 def main(argv):
     if len(argv) < 1:
@@ -217,7 +302,7 @@ def maskFile(inShapeFile,outRasterFile):
     #outDataSource = driver.CreateDataSource(outRasterFile+"."+outSuffix)
     #srs = osr.SpatialReference()
     #srs.ImportFromEPSG(3006)
-    maskArray = Raster()
+    maskArray = Raster(srs=inLayer.GetSpatialRef())
 
     for i in range(inLayer.GetFeatureCount()):
         inFeature = inLayer.GetFeature(i)
