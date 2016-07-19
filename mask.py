@@ -4,16 +4,17 @@
 import ogr, os, sys, osr
 import numpy as np
 from math import floor
+from copy import deepcopy
 
 class Pixelset:
-    def __init__(self,raster,geom=None):
+    def __init__(self,raster,feature=None):
         self.pixels = dict()
         self.raster = raster
         #                   rowmin, rowmax, colmin, colmax
         self.boundingbox = [raster.ny, -1, raster.nx, -1]
 
-        if geom!=None:
-            self.updatePixelsShape(geom)
+        if feature is not None:
+            self.updatePixelsShape(feature)
 
     def getPixel(self,rowcol):
         row = rowcol[0]
@@ -46,8 +47,14 @@ class Pixelset:
         if col > self.boundingbox[3]:
             self.boundingbox[3] = col
 
-    def updatePixelsShape(self, geom):
-        #import pdb; pdb.set_trace()
+    def getPixelStruct(self):
+        retstruct = dict()
+        for (rownr,row) in self.pixels.iteritems():
+            retstruct[rownr] = set(row.keys())
+        return retstruct
+
+    def updatePixelsShape(self, feature):
+        geom = feature.GetGeometryRef()
         for i in range(geom.GetGeometryCount()):
             ring = geom.GetGeometryRef(i)
             prevPixelNo = self.raster.pixelNumber(ring.GetPoint(0))
@@ -140,10 +147,164 @@ class Pixelset:
             for (col,pixel) in rowdict.iteritems():
                 ma[row][col] = 1
         return ma
+
+class Mask:
+    def __init__(self, raster):
+        self.raster = raster
+        self.rows = raster.ny
+        self.cols = raster.nx
+        self.areas = dict()
+        self.masks = dict()
+        self.addedIds = list()
+
+    def addPixelSet(self, pixelset):
+        self.addedIds.append(id(pixelset))
+        #self.sets[id(pixelset)] = pixelset
+        #self.sets.append(pixelset)
+        newarea = Area(self, pixelset)
+        adsorbed = list()
+        for area in self.areas:
+            if newarea.overlap(area):
+                newarea.merge(area)
+                adsorbed.append(area.getId())
+        self.areas[newarea.getId()] = newarea
+        for areaId in adsorbed:
+            del areas[areaId]
+
+    def padAreas(self):
+        for areaId,area in self.areas.iteritems():
+            area.padSelf()
+
+    def createMasks(self):
+        self.padAreas()
+        for fitarea in self.areas:
+            fit = False
+            for nr in sorted(self.masks, reverse=True):
+                fit = True
+                for fittedarea in self.masks[nr]:
+                    if self.areas[fitarea].padoverlap(self.areas[fittedarea]):
+                        fit = False
+                        break
+                if fit == True:
+                    self.masks[nr].append(fitarea)
+                    break
+            if fit == False:
+                self.masks[len(self.masks)] = list()
+                self.masks[len(self.masks)-1].append(fitarea)
+                
+    def printmasks(self):
+        for maskNo in self.masks:
+            self.printmask(maskNo)
+                    
+    def printmask(self,maskNo):
+        ma = np.zeros( (self.raster.ny,self.raster.nx) )
+        for areaId in self.masks[maskNo]:
+            self.areas[areaId].printToMatrix(ma)
+            self.areas[areaId].printPadToMatrix(ma)
+        filename = "mask"+str(maskNo)+".asc"
+        self.raster.printFile(ma,filename)
             
+class Area:
+    def __init__(self,mask,origin):
+        self.mask = mask
+        self.boundingbox = origin.boundingbox
+        self.pixelstruct = origin.getPixelStruct()
+        self.idnr = id(origin)
+
+    def getId(self):
+        return self.idnr
+
+    def padset(self,theset):
+        retset = deepcopy(theset)
+        for nr in theset:
+            retset.add(nr-1)
+            retset.add(nr+1)
+        return retset
+
+    def padSelf(self):
+        self.pad = self.padStruct(self.pixelstruct)
+
+    def padStruct(self,struct):
+        #import pdb; pdb.set_trace()
+        pad = dict()
+        sortedrows = sorted(struct.keys())
+        prevpadset = self.padset(struct[sortedrows[0]])
+        pad[sortedrows[0]-1] = deepcopy(prevpadset)
+        for rownr in sortedrows:
+            pad[rownr] = deepcopy(prevpadset)
+            prevpadset = self.padset(struct[rownr])
+            pad[rownr-1] |= prevpadset
+            pad[rownr] |= prevpadset
+        pad[sortedrows[-1]+1] = deepcopy(prevpadset)
+
+        for rownr in sortedrows:
+            pad[rownr] -= struct[rownr]
+        return pad
+
+    def getOutPaddedStruct(self):
+        retstruct = self.pad
+        for rownr,row in self.pixelstruct.iteritems():
+            retstruct[rownr] |= row
+        return retstruct
+
+    def getDoublePad(self):
+        struct = self.getOutPaddedStruct()
+        return padStruct(struct)
+
+    #def lists_overlap(a, b):
+    #    for i in a:
+    #        if i in b:
+    #            return True
+    #    return False
+
+    def overlap(self,other):
+        if self.boundingbox[0] > other.boundingbox[1] or \
+           self.boundingbox[1] < other.boundingbox[0] or \
+           self.boundingbox[2] > other.boundingbox[3] or \
+           self.boundingbox[3] < other.boundingbox[2]:
+            return false
+        for (rownr,row) in self.pixelstruct.iteritems():
+            if rownr in other.pixelstruct(keys) and \
+               bool(row & other.pixelstruct[rownr]):
+                return true
+        return false
+    
+    def padOverlap(self,other):
+        if self.boundingbox[0]-2 > other.boundingbox[1]+1 or \
+           self.boundingbox[1]+2 < other.boundingbox[0]-1 or \
+           self.boundingbox[2]-2 > other.boundingbox[3]+1 or \
+           self.boundingbox[3]+2 < other.boundingbox[2]-1:
+            return false
+        outerpad = self.getDoublePad()
+        for (rownr,row) in outerpad.iteritems():
+            if rownr in other.pixelstruct(keys) and \
+               bool(row & other.pixelstruct[rownr]):
+                return true
+        return false
+    
+    def merge(self,other):
+        self.boundingbox[0] = min(self.boundingbox[0], other.boundingbox[0])
+        self.boundingbox[1] = max(self.boundingbox[1], other.boundingbox[1])
+        self.boundingbox[2] = min(self.boundingbox[2], other.boundingbox[2])
+        self.boundingbox[3] = max(self.boundingbox[3], other.boundingbox[3])
+        for (rownr,row) in other.pixelstruct.iteritems():
+            if rownr in self.pixelstruct.keys():
+                self.pixelstruct[rownr] |= row
+    
+    def printToMatrix(self,ma):
+        for rownr,row in self.pixelstruct.iteritems():
+            for col in row:
+                ma[rownr][col] = 1
+
+    def printPadToMatrix(self,ma):
+        for rownr,row in self.pad.iteritems():
+            for col in row:
+                ma[rownr][col] = 2
+
+
 class Raster:
     def __init__(self, 
-                 filename = "test6.asc",
+                 filename = "test7.asc",
                  ox = 222000,
                  oy = 7674000,
                  sx = 1000,
@@ -164,10 +325,15 @@ class Raster:
         self.srs = srs
 
         self.ma = np.zeros( (ny,nx) )
-        #self.pixels = Pixelset(self)
+        self.mask = Mask(self)
+        self.pixelsets = dict()
     
-    def printFile(self):
-        ofh = open(self.filename,'w')
+    def printFile(self, matrix=None, filename=None):
+        if matrix == None:
+            matrix = self.ma
+        if filename == None:
+            filename = self.filename
+        ofh = open(filename,'w')
         ofh.write("ncols        %d\n" % self.nx)
         ofh.write("nrows        %d\n" % self.ny)
         ofh.write("xllcorner    %d\n" % self.ox)
@@ -177,15 +343,16 @@ class Raster:
             yll = self.oy + self.ny*self.sy
             ofh.write("yllcorner    %d\n" % yll)
         ofh.write("cellsize     %d\n" % self.sx)
-        for row in self.ma:
+        for row in matrix:
             for val in row:
                 ofh.write(' %d' % val)
             ofh.write("\n")
         ofh.close()
     
-    def updatePixelsShape(self, geom):
-        pixels = Pixelset(self, geom)
-        pixels.updateMaskMatrix(self.ma)
+    def updatePixelsShape(self, feature):
+        pixels = Pixelset(self, feature)
+        self.pixelsets[id(pixels)] = pixels
+        #pixels.updateMaskMatrix(self.ma)
 
     def pixelNumber(self, point):
         row = int(floor((point[1]-self.oy)/self.sy))
@@ -197,8 +364,11 @@ class Raster:
         y0 = self.oy + row*self.sy
         return [x0, y0, self.sx, self.sy]
 
-    def setval(self, point, val=1):
-        self.ma[point[0],point[1]] = val
+    def setVal(self, point, val=1):
+        self.ma[point[0]][point[1]] = val
+
+    def setMaskVal(self, point, val=1):
+        self.Mask
 
 class Pixel:
     def __init__(self,row,col,coords):
@@ -298,19 +468,25 @@ def maskFile(inShapeFile,outRasterFile):
     #outDataSource = driver.CreateDataSource(outRasterFile+"."+outSuffix)
     #srs = osr.SpatialReference()
     #srs.ImportFromEPSG(3006)
-    maskArray = Raster(srs=inLayer.GetSpatialRef())
+    myRaster = Raster(srs=inLayer.GetSpatialRef())
 
     for i in range(inLayer.GetFeatureCount()):
         inFeature = inLayer.GetFeature(i)
         geom = inFeature.GetGeometryRef()
-        maskArray.updatePixelsShape(geom)
+        #maskArray.updatePixelsShape(geom)
+        myRaster.updatePixelsShape(inFeature)
         #for j in range(geom.GetGeometryCount()):
         #    shapelim = geom.GetGeometryRef(j)
         #    maskArray.updatePixelsShape(shapelim)
 
-    #import pdb; pdb.set_trace()
-    print "Printing result to file", maskArray.filename
-    maskArray.printFile()
+    for setid,pixset in myRaster.pixelsets.iteritems():
+        myRaster.mask.addPixelSet(pixset)
+    myRaster.mask.createMasks()
+    myRaster.mask.printmasks()
+
+    import pdb; pdb.set_trace()
+    #print "Printing result to file", maskArray.filename
+    #maskArray.printFile()
 
 if __name__ == "__main__":
     main(sys.argv[1:])
