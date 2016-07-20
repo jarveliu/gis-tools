@@ -145,7 +145,7 @@ class Pixelset:
     def updateMaskMatrix(self,ma):
         for (row,rowdict) in self.pixels.iteritems():
             for (col,pixel) in rowdict.iteritems():
-                ma[row][col] = 1
+                ma[row][col] = id(self)
         return ma
 
 class Mask:
@@ -163,13 +163,14 @@ class Mask:
         #self.sets.append(pixelset)
         newarea = Area(self, pixelset)
         adsorbed = list()
-        for area in self.areas:
-            if newarea.overlap(area):
+        for areaId,area in self.areas.iteritems():
+            if newarea.padOverlap(area):
+                #import pdb; pdb.set_trace()
                 newarea.merge(area)
-                adsorbed.append(area.getId())
+                adsorbed.append(areaId)
         self.areas[newarea.getId()] = newarea
         for areaId in adsorbed:
-            del areas[areaId]
+            del self.areas[areaId]
 
     def padAreas(self):
         for areaId,area in self.areas.iteritems():
@@ -182,7 +183,7 @@ class Mask:
             for nr in sorted(self.masks, reverse=True):
                 fit = True
                 for fittedarea in self.masks[nr]:
-                    if self.areas[fitarea].padoverlap(self.areas[fittedarea]):
+                    if self.areas[fitarea].doublePadOverlap(self.areas[fittedarea]):
                         fit = False
                         break
                 if fit == True:
@@ -242,14 +243,14 @@ class Area:
         return pad
 
     def getOutPaddedStruct(self):
-        retstruct = self.pad
+        retstruct = self.padStruct(self.pixelstruct)
         for rownr,row in self.pixelstruct.iteritems():
             retstruct[rownr] |= row
         return retstruct
 
     def getDoublePad(self):
         struct = self.getOutPaddedStruct()
-        return padStruct(struct)
+        return self.padStruct(struct)
 
     #def lists_overlap(a, b):
     #    for i in a:
@@ -262,25 +263,38 @@ class Area:
            self.boundingbox[1] < other.boundingbox[0] or \
            self.boundingbox[2] > other.boundingbox[3] or \
            self.boundingbox[3] < other.boundingbox[2]:
-            return false
+            return False
         for (rownr,row) in self.pixelstruct.iteritems():
-            if rownr in other.pixelstruct(keys) and \
+            if rownr in other.pixelstruct.keys() and \
                bool(row & other.pixelstruct[rownr]):
-                return true
-        return false
+                return True
+        return False
     
     def padOverlap(self,other):
+        if self.boundingbox[0]-1 > other.boundingbox[1] or \
+           self.boundingbox[1]+1 < other.boundingbox[0] or \
+           self.boundingbox[2]-1 > other.boundingbox[3] or \
+           self.boundingbox[3]+1 < other.boundingbox[2]:
+            return False
+        padded = self.getOutPaddedStruct()
+        for (rownr,row) in padded.iteritems():
+            if rownr in other.pixelstruct.keys() and \
+               bool(row & other.pixelstruct[rownr]):
+                return True
+        return False
+
+    def doublePadOverlap(self,other):
         if self.boundingbox[0]-2 > other.boundingbox[1]+1 or \
            self.boundingbox[1]+2 < other.boundingbox[0]-1 or \
            self.boundingbox[2]-2 > other.boundingbox[3]+1 or \
            self.boundingbox[3]+2 < other.boundingbox[2]-1:
-            return false
+            return False
         outerpad = self.getDoublePad()
         for (rownr,row) in outerpad.iteritems():
-            if rownr in other.pixelstruct(keys) and \
-               bool(row & other.pixelstruct[rownr]):
-                return true
-        return false
+            if rownr in other.pad.keys() and \
+               bool(row & other.pad[rownr]):
+                return True
+        return False
     
     def merge(self,other):
         self.boundingbox[0] = min(self.boundingbox[0], other.boundingbox[0])
@@ -290,6 +304,8 @@ class Area:
         for (rownr,row) in other.pixelstruct.iteritems():
             if rownr in self.pixelstruct.keys():
                 self.pixelstruct[rownr] |= row
+            else:
+                self.pixelstruct[rownr] = row
     
     def printToMatrix(self,ma):
         for rownr,row in self.pixelstruct.iteritems():
@@ -483,8 +499,12 @@ def maskFile(inShapeFile,outRasterFile):
         myRaster.mask.addPixelSet(pixset)
     myRaster.mask.createMasks()
     myRaster.mask.printmasks()
+    ma = np.zeros( (myRaster.ny, myRaster.nx) )
+    #for setid,pixset in myRaster.pixelsets.iteritems():
+    #    pixset.updateMaskMatrix(ma)
+    #    myRaster.printFile(ma,"oxelpixel.asc")
 
-    import pdb; pdb.set_trace()
+    #import pdb; pdb.set_trace()
     #print "Printing result to file", maskArray.filename
     #maskArray.printFile()
 
