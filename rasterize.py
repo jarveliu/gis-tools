@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import argparse
 import ogr, os, sys, osr
 import numpy as np
 from math import floor
 from copy import deepcopy
+
+rasterize_parser = argparse.ArgumentParser(add_help=False)
+rasterize_parser.add_argument('infile')
 
 class Pixelset:
     def __init__(self,raster,feature=None):
@@ -12,9 +16,14 @@ class Pixelset:
         self.raster = raster
         #                   rowmin, rowmax, colmin, colmax
         self.boundingbox = [raster.ny, -1, raster.nx, -1]
-
+        self.feature = feature
         if feature is not None:
             self.updatePixelsShape(feature)
+
+    def getPixels(self):
+        for rownr, row in self.pixels.iteritems():
+            for colnr, pix in row.iteritems():
+                yield pix
 
     def getPixel(self,rowcol):
         row = rowcol[0]
@@ -140,16 +149,17 @@ class Pixelset:
     #        for col in row:
     #            self.lookForNeighbours(i,col)
 
-            
-
     def updateMaskMatrix(self,ma):
         for (row,rowdict) in self.pixels.iteritems():
             for (col,pixel) in rowdict.iteritems():
                 ma[row][col] = id(self)
         return ma
 
-class Mask:
-    def __init__(self, raster):
+class BUMMask:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--outfilebasename', default="mask")
+    def __init__(self, su, raster):
+        self.su = su
         self.raster = raster
         self.rows = raster.ny
         self.cols = raster.nx
@@ -202,7 +212,7 @@ class Mask:
         for areaId in self.masks[maskNo]:
             self.areas[areaId].printToMatrix(ma)
             self.areas[areaId].printPadToMatrix(ma)
-        filename = "mask"+str(maskNo)+".asc"
+        filename = self.su.outfilebasename+str(maskNo)+".asc"
         self.raster.printFile(ma,filename)
             
 class Area:
@@ -251,12 +261,6 @@ class Area:
     def getDoublePad(self):
         struct = self.getOutPaddedStruct()
         return self.padStruct(struct)
-
-    #def lists_overlap(a, b):
-    #    for i in a:
-    #        if i in b:
-    #            return True
-    #    return False
 
     def overlap(self,other):
         if self.boundingbox[0] > other.boundingbox[1] or \
@@ -319,30 +323,42 @@ class Area:
 
 
 class Raster:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--rastergeometry', nargs=6,
+                        default=[222000,7674000,1000,-1000,740,1570],
+                        help='origin_x origin_y step_x step_y No_of_pixels_x No_of_pixels_y')
+    parser.add_argument('outfile')
     def __init__(self, 
-                 filename = "test7.asc",
-                 ox = 222000,
-                 oy = 7674000,
-                 sx = 1000,
-                 sy = -1000,
-                 nx = 740,
-                 ny = 1570,
+                 su = None,
                  srs = None):
-        self.filename = filename
-        self.ox = ox
-        self.oy = oy
-        self.sx = sx
-        self.sy = sy
-        self.nx = nx
-        self.ny = ny
+        
+        self.ox = su.rastergeometry[0]
+        self.oy = su.rastergeometry[1] 
+        self.sx = su.rastergeometry[2] 
+        self.sy = su.rastergeometry[3] 
+        self.nx = su.rastergeometry[4] 
+        self.ny = su.rastergeometry[5] 
+
+        if hasattr(su,'filename') \
+           or isinstance(su,argparse.Namespace) and su.__contains__('outfile'):
+            self.filename = su.outfile
         if srs == None:
             srs = osr.SpatialReference()
             srs.SetWellKnownGeogCS("EPSG:3006")
         self.srs = srs
 
-        self.ma = np.zeros( (ny,nx) )
-        self.mask = Mask(self)
         self.pixelsets = dict()
+
+    def updateMatrix(self,field):
+        self.ma = np.zeros( (self.ny,self.nx) )
+        for setId,ps in self.pixelsets.iteritems():
+            geom = ps.feature.GetGeometryRef()
+            value = ps.feature.GetField(field)
+            area = geom.GetArea()
+            density = value/area
+            for pixel in ps.getPixels():
+                self.ma[pixel.row][pixel.col] \
+                    += pixel.getEnclosedArea(geom)*density
     
     def printFile(self, matrix=None, filename=None):
         if matrix == None:
@@ -382,9 +398,6 @@ class Raster:
 
     def setVal(self, point, val=1):
         self.ma[point[0]][point[1]] = val
-
-    def setMaskVal(self, point, val=1):
-        self.Mask
 
 class Pixel:
     def __init__(self,row,col,coords):
@@ -440,11 +453,11 @@ class Pixel:
 
     def getSquarePolygon(self):
         ring = ogr.Geometry(ogr.wkbLinearRing)
-        ring.AddPoint_2D(x0,y0)
-        ring.AddPoint_2D(x0+sx,y0)
-        ring.AddPoint_2D(x0+sx,y0+sy)
-        ring.AddPoint_2D(x0,y0+sy)
-        ring.AddPoint_2D(x0,y0)
+        ring.AddPoint_2D(self.x0,self.y0)
+        ring.AddPoint_2D(self.x0+self.sx,self.y0)
+        ring.AddPoint_2D(self.x0+self.sx,self.y0+self.sy)
+        ring.AddPoint_2D(self.x0,self.y0+self.sy)
+        ring.AddPoint_2D(self.x0,self.y0)
         poly = ogr.Geometry(ogr.wkbPolygon)
         poly.AddGeometry(ring)
         return poly
@@ -459,54 +472,20 @@ class Pixel:
     def getArea(self):
         return abs(sx*sy)
 
-def main(argv):
-    if len(argv) < 1:
-        print "usage: mask.py infile outfile"
-        sys.exit(1)
-	
-    inShapeFile = sys.argv[1]
-    outRasterFile = 'test'
-    outSuffix = 'asc'
-    #outRasterFile = sys.argv[2]
-    #if outRasterFile[-4:] == ".shp":
-    #    outRasterFile =  outRasterFile[:-4]
-    maskFile(inShapeFile,outRasterFile)
+def main():
+    parser = argparse.ArgumentParser(parents=[rasterize_parser, Raster.parser])
+    parser.add_argument('field')
+    su = parser.parse_args()
 
-def maskFile(inShapeFile,outRasterFile):	
     driver = ogr.GetDriverByName('ESRI Shapefile')
-    inDataSource = driver.Open(inShapeFile,0)
+    inDataSource = driver.Open(su.infile,0)
     inLayer = inDataSource.GetLayer()
-	
-    # Remove output shapefile if it already exists
-    #if os.path.exists(outRasterFile+'.'+outSuffix):
-        #driver.DeleteDataSource(outRasterFile+"."+outSuffix)
-	
-    #outDataSource = driver.CreateDataSource(outRasterFile+"."+outSuffix)
-    #srs = osr.SpatialReference()
-    #srs.ImportFromEPSG(3006)
-    myRaster = Raster(srs=inLayer.GetSpatialRef())
-
+    myRaster = Raster(su=su, srs=inLayer.GetSpatialRef())
     for i in range(inLayer.GetFeatureCount()):
         inFeature = inLayer.GetFeature(i)
-        geom = inFeature.GetGeometryRef()
-        #maskArray.updatePixelsShape(geom)
         myRaster.updatePixelsShape(inFeature)
-        #for j in range(geom.GetGeometryCount()):
-        #    shapelim = geom.GetGeometryRef(j)
-        #    maskArray.updatePixelsShape(shapelim)
-
-    for setid,pixset in myRaster.pixelsets.iteritems():
-        myRaster.mask.addPixelSet(pixset)
-    myRaster.mask.createMasks()
-    myRaster.mask.printmasks()
-    ma = np.zeros( (myRaster.ny, myRaster.nx) )
-    #for setid,pixset in myRaster.pixelsets.iteritems():
-    #    pixset.updateMaskMatrix(ma)
-    #    myRaster.printFile(ma,"oxelpixel.asc")
-
-    #import pdb; pdb.set_trace()
-    #print "Printing result to file", maskArray.filename
-    #maskArray.printFile()
+    myRaster.updateMatrix(su.field)
+    myRaster.printFile()
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()
