@@ -1,0 +1,13 @@
+*~
+*.asc
+*.aux.xml
+*.cpg
+*.dbf
+*.prj
+*.qml
+*.qpj
+*.shp
+*.shx
+*.tif
+*.tiff
+*.pyc

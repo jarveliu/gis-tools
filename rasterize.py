@@ -64,20 +64,27 @@ class Pixelset:
 
     def updatePixelsShape(self, feature):
         geom = feature.GetGeometryRef()
-        for i in range(geom.GetGeometryCount()):
-            ring = geom.GetGeometryRef(i)
-            prevPixelNo = self.raster.pixelNumber(ring.GetPoint(0))
-            currentPixel = self.getPixel(prevPixelNo)
-            for j in range(0, ring.GetPointCount()):
-                pixelNo = self.raster.pixelNumber(ring.GetPoint(j))
-
-                if pixelNo != prevPixelNo:
-                    self.updatePixelsEdge(ring.GetPoint(j-1), ring.GetPoint(j))
-                    currentPixel = self.getPixel(pixelNo)
-                    prevPixelNo = pixelNo
-                currentPixel.addCorner(ring.GetPoint(j))
+        self.updatePixelsRecursion(geom)
         self.addEnclosedPixels(geom)
         #self.updateMaskMatrix(self.ma)
+
+    def updatePixelsRecursion(self,geom):
+        for i in range(geom.GetGeometryCount()):
+            self.updatePixelsRecursion(geom.GetGeometryRef(i))
+        if geom.GetGeometryCount() == 0:
+            self.updatePixelsRing(geom)
+
+    def updatePixelsRing(self, ring):
+        prevPixelNo = self.raster.pixelNumber(ring.GetPoint(0))
+        currentPixel = self.getPixel(prevPixelNo)
+        for j in range(0, ring.GetPointCount()):
+            pixelNo = self.raster.pixelNumber(ring.GetPoint(j))
+
+            if pixelNo != prevPixelNo:
+                self.updatePixelsEdge(ring.GetPoint(j-1), ring.GetPoint(j))
+                currentPixel = self.getPixel(pixelNo)
+                prevPixelNo = pixelNo
+            currentPixel.addCorner(ring.GetPoint(j))
 
     def updatePixelsEdge(self,geom1,geom2):
         pixelNo1 = self.raster.pixelNumber(geom1)
@@ -467,7 +474,10 @@ class Pixel:
         return squarePoly.Intersection(geom)
 
     def getEnclosedArea(self,geom):
-        return self.getEnclosedPolygon(geom).GetArea()
+        encpoly = self.getEnclosedPolygon(geom)
+        ##Here the warning comes about GetArea called on non-surface
+        retval = encpoly.GetArea()
+        return retval
         
     def getArea(self):
         return abs(sx*sy)
@@ -482,6 +492,9 @@ def main():
     inLayer = inDataSource.GetLayer()
     myRaster = Raster(su=su, srs=inLayer.GetSpatialRef())
     for i in range(inLayer.GetFeatureCount()):
+        #print i
+        #if i == 144:
+        #    import pdb; pdb.set_trace()
         inFeature = inLayer.GetFeature(i)
         myRaster.updatePixelsShape(inFeature)
     myRaster.updateMatrix(su.field)
