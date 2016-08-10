@@ -11,7 +11,28 @@ rasterize_parser = argparse.ArgumentParser(add_help=False)
 rasterize_parser.add_argument('infile')
 
 class Pixelset:
+    """A set of pixels in a raster.
+
+    Attributes:
+    pixels -- a dictionary of dictionaries, with integer keys containing row
+              and column numbers, containing Pixel objects.
+    raster -- a Raster object the Pixelset belongs to
+    feature -- a shapefile feature object that used to instansiate the 
+               Pixelset
+    boundingbox -- bb of the Pixelset as 4 int array, [rowmin, rowmax, 
+                   colmin, colmax], kept to improve speed in comparisons.
+    """
+    
     def __init__(self,raster,feature=None):
+        """With a pointer to a raster it belongs to.
+
+        positional argument:
+        raster -- a Raster object the Pixelset belongs to
+
+        keyword argument:
+        feature -- a shapefile feature object that should be used to 
+                   instansiate the Pixelset
+        """
         self.pixels = dict()
         self.raster = raster
         #                   rowmin, rowmax, colmin, colmax
@@ -21,11 +42,20 @@ class Pixelset:
             self.updatePixelsShape(feature)
 
     def getPixels(self):
+        """Generator for all Pixels in the set"""
         for rownr, row in self.pixels.iteritems():
             for colnr, pix in row.iteritems():
                 yield pix
 
     def getPixel(self,rowcol):
+        """Return a Pixel object for given coordinates.
+
+        If a Pixel of the given row and column values exists it is returned,
+        if not a new empty Pixel object is added to set and returned.
+
+        positional argument:
+        rowcol -- two integer list with row and column numbers.
+        """
         row = rowcol[0]
         col = rowcol[1]
         if row not in self.pixels.keys():
@@ -40,6 +70,17 @@ class Pixelset:
         return pix
     
     def addPixel(self,pixel,row,col):
+        """Add a Pixel object to the set.
+
+        positional arguments:
+        pixel -- Pixel object to add.
+        row -- (int) row number
+        col -- (int) col number
+
+        exception:
+        Exception -- if a pixel with those row and column numbers already 
+                     exists in set.
+        """
         if row not in self.pixels.keys():
             self.pixels[row] = dict()
         if col in self.pixels[row].keys():
@@ -57,24 +98,41 @@ class Pixelset:
             self.boundingbox[3] = col
 
     def getPixelStruct(self):
+        """Return a dict of lists with row and column numbers of pixels.
+
+        A lightweight representation of the object."""
         retstruct = dict()
         for (rownr,row) in self.pixels.iteritems():
             retstruct[rownr] = set(row.keys())
         return retstruct
 
     def updatePixelsShape(self, feature):
+        """Update the set with pixels corresponding to feature.
+
+        positional argument:
+        feature -- ogr feature object"""
         geom = feature.GetGeometryRef()
         self.updatePixelsRecursion(geom)
         self.addEnclosedPixels(geom)
-        #self.updateMaskMatrix(self.ma)
 
     def updatePixelsRecursion(self,geom):
+        """Recursion function for updatePixelsShape.
+
+        positional argument:
+        geom -- ogr geometry object, may be a ring or a geometry object 
+                containing one or more rings at any level of nesting.
+        """
         for i in range(geom.GetGeometryCount()):
             self.updatePixelsRecursion(geom.GetGeometryRef(i))
         if geom.GetGeometryCount() == 0:
             self.updatePixelsRing(geom)
 
     def updatePixelsRing(self, ring):
+        """Update the set with pixels corresponding to ogr ring.
+
+        positional argument:
+        ring -- ogr ring object.
+        """
         prevPixelNo = self.raster.pixelNumber(ring.GetPoint(0))
         currentPixel = self.getPixel(prevPixelNo)
         for j in range(0, ring.GetPointCount()):
@@ -87,10 +145,20 @@ class Pixelset:
             currentPixel.addCorner(ring.GetPoint(j))
 
     def updatePixelsEdge(self,geom1,geom2):
+        """Update the set with pixels on a linte between two points.
+
+        positional arguments:
+        geom1 and geom2 -- coordinates for the two endpoints of the line in 
+                           the coordinate system used in Raster
+
+        note:
+        Calculates the exact positions of all pixel edge crossnings. This is
+        at the moment waisted effort as the information is not used in the 
+        area coverage calculation.
+        """
         pixelNo1 = self.raster.pixelNumber(geom1)
         pixelNo2 = self.raster.pixelNumber(geom2)
         pixel1 = self.getPixel(pixelNo1)
-        #pixel2 = self.getPixel(pixelNo2)
 
         #Hur många skärningar i resp led letar vi efter?
         nox = pixelNo2[1] - pixelNo1[1]
@@ -138,6 +206,14 @@ class Pixelset:
             p2.addEdge((x,y),2-sigy)
 
     def addEnclosedPixels(self, geom):
+        """Update the set with the pixels fully enclosed in geometry.
+
+        To be run after all pixels containing to corners and edges of 
+        the geometry is already identified and added.
+
+        positional argument:
+        geom -- ogr geometry object
+        """
         for i in range(self.boundingbox[0]+1, self.boundingbox[1]):
             if i in self.pixels.keys():
                 sortedkeys = sorted(self.pixels[i].keys())
@@ -156,16 +232,36 @@ class Pixelset:
     #        for col in row:
     #            self.lookForNeighbours(i,col)
 
-    def updateMaskMatrix(self,ma):
-        for (row,rowdict) in self.pixels.iteritems():
-            for (col,pixel) in rowdict.iteritems():
-                ma[row][col] = id(self)
-        return ma
+    #def updateMaskMatrix(self,ma):
+    #    for (row,rowdict) in self.pixels.iteritems():
+    #        for (col,pixel) in rowdict.iteritems():
+    #            ma[row][col] = id(self)
+    #    return ma
 
 class BUMMask:
+    """A mask type used in BUM
+
+    A special mask type where a set of shape areas are read from a file,
+    all pixel in contact with a shape from the input are marked, and all 
+    sets of pixels masked that is in direct connection to each other are
+    merged together in areas (Area objects). Around those clusters are a 
+    bufferzone of one pixel. In the end a subset of such clusters that does
+    not overlap or get in contact to each other are written to file, a "BUM
+    mask". 
+
+    Attributes:
+    su -- setup object with settings from command line attributes.
+    raster -- a Raster object.
+    rows -- number of rows in raster
+    cols -- number of columns in raster.
+    areas -- dict of Area objects.
+    masks -- dict of lists of Area objects that form a BUM mask.
+    addedIds -- list of Id numbers for the Pixelset objects added.
+    """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--outfilebasename', default="mask")
     def __init__(self, su, raster):
+        """Initialize with setup object and Raster object"""
         self.su = su
         self.raster = raster
         self.rows = raster.ny
@@ -175,6 +271,7 @@ class BUMMask:
         self.addedIds = list()
 
     def addPixelSet(self, pixelset):
+        """Add a Pixelset object"""
         self.addedIds.append(id(pixelset))
         #self.sets[id(pixelset)] = pixelset
         #self.sets.append(pixelset)
@@ -190,10 +287,12 @@ class BUMMask:
             del self.areas[areaId]
 
     def padAreas(self):
+        """Store a buffer zone around each area."""
         for areaId,area in self.areas.iteritems():
             area.padSelf()
 
     def createMasks(self):
+        """Create the BUM masks (Attribute masks)"""
         self.padAreas()
         for fitarea in self.areas:
             fit = False
@@ -211,10 +310,16 @@ class BUMMask:
                 self.masks[len(self.masks)-1].append(fitarea)
                 
     def printmasks(self):
+        """Print all BUM masks to asc files."""
         for maskNo in self.masks:
             self.printmask(maskNo)
                     
     def printmask(self,maskNo):
+        """Print a BUM mask to an asc file.
+
+        positional argument:
+        maskNo -- zerobased number of mask.
+        """
         ma = np.zeros( (self.raster.ny,self.raster.nx) )
         for areaId in self.masks[maskNo]:
             self.areas[areaId].printToMatrix(ma)
@@ -223,16 +328,32 @@ class BUMMask:
         self.raster.printFile(ma,filename)
             
 class Area:
+    """A set of pixels containing all pixels in contact with eachother.
+
+    The class for structures building up a BUM mask. Sets of pixels read
+    from pixelsets but pixelsets overlaping eachother or containing pixels
+    neighbouring eachother are merged together. 
+
+    Attributes:
+    mask -- a BUMMask object
+    boundingbox -- similar to Pixelset boundingbox
+    pixelstruct -- dict of lists of row and column numbers of contained pix
+    idnr -- ID number taken from the pixelset the area is built from
+    """
+
     def __init__(self,mask,origin):
+        """Initialized with a BUMMask and a Pixelstruct object."""
         self.mask = mask
         self.boundingbox = origin.boundingbox
         self.pixelstruct = origin.getPixelStruct()
         self.idnr = id(origin)
 
     def getId(self):
+        """Return unique ID number for the object."""
         return self.idnr
 
     def padset(self,theset):
+        """Take a set of integers return a set with also adjusent numbers"""
         retset = deepcopy(theset)
         for nr in theset:
             retset.add(nr-1)
@@ -240,10 +361,16 @@ class Area:
         return retset
 
     def padSelf(self):
+        """Store a self.pad pad with pixels neigbouring pixelstruct."""
         self.pad = self.padStruct(self.pixelstruct)
 
     def padStruct(self,struct):
-        #import pdb; pdb.set_trace()
+        """Calculate a pad with pixels neigbouring a structure.
+
+        positional argument:
+        struct -- a dict of sets of integers where dict keys are row numbers
+                  and sets contains column numbers for pixels.
+        """
         pad = dict()
         sortedrows = sorted(struct.keys())
         prevpadset = self.padset(struct[sortedrows[0]])
@@ -260,16 +387,23 @@ class Area:
         return pad
 
     def getOutPaddedStruct(self):
+        """Return a structure that is a join of pixelstruct and pad"""
         retstruct = self.padStruct(self.pixelstruct)
         for rownr,row in self.pixelstruct.iteritems():
             retstruct[rownr] |= row
         return retstruct
 
     def getDoublePad(self):
+        """Return a structure that is padded twice."""
         struct = self.getOutPaddedStruct()
         return self.padStruct(struct)
 
     def overlap(self,other):
+        """Return true if other Area overlap with self else false.
+
+        positional argument:
+        other -- another Area object
+        """
         if self.boundingbox[0] > other.boundingbox[1] or \
            self.boundingbox[1] < other.boundingbox[0] or \
            self.boundingbox[2] > other.boundingbox[3] or \
@@ -282,6 +416,11 @@ class Area:
         return False
     
     def padOverlap(self,other):
+        """Return true if other Area overlap with selfs pad else false.
+
+        positional argument:
+        other -- another Area object
+        """
         if self.boundingbox[0]-1 > other.boundingbox[1] or \
            self.boundingbox[1]+1 < other.boundingbox[0] or \
            self.boundingbox[2]-1 > other.boundingbox[3] or \
@@ -295,6 +434,11 @@ class Area:
         return False
 
     def doublePadOverlap(self,other):
+        """Return true if other Areas pad overlap with selfs doublepad.
+
+        positional argument:
+        other -- another Area object
+        """
         if self.boundingbox[0]-2 > other.boundingbox[1]+1 or \
            self.boundingbox[1]+2 < other.boundingbox[0]-1 or \
            self.boundingbox[2]-2 > other.boundingbox[3]+1 or \
@@ -308,6 +452,7 @@ class Area:
         return False
     
     def merge(self,other):
+        """Merge other Area into self."""
         self.boundingbox[0] = min(self.boundingbox[0], other.boundingbox[0])
         self.boundingbox[1] = max(self.boundingbox[1], other.boundingbox[1])
         self.boundingbox[2] = min(self.boundingbox[2], other.boundingbox[2])
@@ -319,17 +464,36 @@ class Area:
                 self.pixelstruct[rownr] = row
     
     def printToMatrix(self,ma):
+        """Print ones to pixels covered by the area to matrix"""
         for rownr,row in self.pixelstruct.iteritems():
             for col in row:
                 ma[rownr][col] = 1
 
     def printPadToMatrix(self,ma):
+        """Print twos to pixels covered by the 1px pad around area to matrix"""
         for rownr,row in self.pad.iteritems():
             for col in row:
                 ma[rownr][col] = 2
 
 
 class Raster:
+    """A printable raster geometry and collection of Pixelset objects.
+
+    Class variable:
+    argparse.ArgumentParser, may be used as parent to script parsers.
+
+    Attributes:
+    srs -- osr spatial reference object
+    ox -- origo x lower left coordinate
+    oy -- origo y lower left coordinate
+    sx -- x direction step between pixels
+    sy -- y direction step between pixels
+    nx -- number of columns in raster
+    ny -- number of rows in raster
+    pixelsets -- dict containing Pixelset objects, keys are Pixelset IDs.
+    ma -- numpy array containing raster numerical values.
+    """
+    
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--rastergeometry', nargs=6,
                         default=[222000,7674000,1000,-1000,740,1570],
@@ -338,6 +502,13 @@ class Raster:
     def __init__(self, 
                  su = None,
                  srs = None):
+        """Constructor
+        
+        positional arguments:
+        su -- argparse.Namespace object with settings. Should contain 
+              rastergeometry and outfile attributes.
+        srs -- osr spatial reference object.
+        """
         
         self.ox = su.rastergeometry[0]
         self.oy = su.rastergeometry[1] 
@@ -357,6 +528,11 @@ class Raster:
         self.pixelsets = dict()
 
     def updateMatrix(self,field):
+        """create the ma attribute with values from pixelsets
+
+        positional argument:
+        field -- name of the field in shapefile go get values from.
+        """
         self.ma = np.zeros( (self.ny,self.nx) )
         for setId,ps in self.pixelsets.iteritems():
             geom = ps.feature.GetGeometryRef()
@@ -368,6 +544,12 @@ class Raster:
                     += pixel.getEnclosedArea(geom)*density
     
     def printFile(self, matrix=None, filename=None):
+        """print matrix values to an ascii raster file
+
+        keyword arguments:
+        matrix -- matrix to print, default is self.ma
+        filename -- name of output file, default is self.filename
+        """
         if matrix == None:
             matrix = self.ma
         if filename == None:
@@ -389,25 +571,76 @@ class Raster:
         ofh.close()
     
     def updatePixelsShape(self, feature):
+        """create a new Pixelset and add to pixelsets attribute
+
+        positional argument:
+        feature -- ogr feature object to add 
+        """
         pixels = Pixelset(self, feature)
         self.pixelsets[id(pixels)] = pixels
         #pixels.updateMaskMatrix(self.ma)
 
     def pixelNumber(self, point):
+        """return the row and column number for pixel covering point
+        
+        positional argument:
+        point -- two number list with x and y coordinates for point
+        """
         row = int(floor((point[1]-self.oy)/self.sy))
         col = int(floor((point[0]-self.ox)/self.sx))
         return row,col
 
     def calcPixelCoordinates(self, row, col):
+        """return pixel corner coordinates and size for pixel in row, col
+
+        positional arguments:
+        row -- row number for pixel.
+        col -- col number for pixel.
+
+        return values:
+        4 numbers list: [x0, y0, delta_x, delta_y]
+        """
         x0 = self.ox + col*self.sx
         y0 = self.oy + row*self.sy
         return [x0, y0, self.sx, self.sy]
 
     def setVal(self, point, val=1):
+        """Set pixel value for a pixel
+
+        positional argument:
+        point -- 2 numbers list: row, col
+
+        keyword argument:
+        val -- value, defaults to 1
+        """
         self.ma[point[0]][point[1]] = val
 
 class Pixel:
+    """Single pixel object.
+
+    Attributes:
+    row -- row number in raster
+    col -- column number in raster
+    cornerpoints -- list of ogr geometry object corner points in pixel
+    edgepoints -- list of points on pixel edge with crossings by lines
+                  connecting ogr geometry object corners.
+    points -- list of ogr geometry object points in pixel 
+    edgecross --
+    x0 -- x-coordinate of the corner closest to the raster origo
+    y0 -- y-coordinate of the corner closest to the raster origo
+    sx -- "delta x" x0+sx gives the x coordinate of the corner furtest from
+          the raster origo.
+    sy -- similar in y direction.
+    """
+    
     def __init__(self,row,col,coords):
+        """constructor
+
+        Attributes:
+        row -- row number in raster
+        col -- column number in raster
+        coords -- 4 number list with coordinates [x0, y0, sx, sy]
+        """
         self.row = row
         self.col = col
         self.cornerpoints = list()
@@ -436,11 +669,17 @@ class Pixel:
         return hash(str(self.row)+"."+str(self.col))
 
     def getCenterCoords(self):
+        """return center of pixel as 2 numbers, x,y"""
         xc = self.x0 + self.sx/2
         yc = self.y0 + self.sy/2
         return xc,yc
 
     def getCenterPoint(self,srs):
+        """return center of pixel as ogr Geometry point object
+
+        positional argument:
+        srs -- osr spatial reference object for return point
+        """
         (x,y) = self.getCenterCoords()
         pt = ogr.Geometry(ogr.wkbPoint)
         pt.AssignSpatialReference(srs)
@@ -448,6 +687,11 @@ class Pixel:
         return pt
 
     def addCorner(self,coords):
+        """add a corner point to the points attribute
+
+        positional argument:
+        coords -- coordinates
+        """
         self.cornerpoints.append(len(self.points))
         self.points.append(coords)
 
