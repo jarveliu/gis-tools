@@ -510,12 +510,12 @@ class Raster:
         srs -- osr spatial reference object.
         """
         
-        self.ox = su.rastergeometry[0]
-        self.oy = su.rastergeometry[1] 
-        self.sx = su.rastergeometry[2] 
-        self.sy = su.rastergeometry[3] 
-        self.nx = su.rastergeometry[4] 
-        self.ny = su.rastergeometry[5] 
+        self.ox = int(su.rastergeometry[0])
+        self.oy = int(su.rastergeometry[1]) 
+        self.sx = int(su.rastergeometry[2]) 
+        self.sy = int(su.rastergeometry[3]) 
+        self.nx = int(su.rastergeometry[4]) 
+        self.ny = int(su.rastergeometry[5]) 
 
         if hasattr(su,'filename') \
            or isinstance(su,argparse.Namespace) and su.__contains__('outfile'):
@@ -526,6 +526,21 @@ class Raster:
         self.srs = srs
 
         self.pixelsets = dict()
+
+    def updateMatrixFromPointsLayer(self,inLayer,field,matrix=None):
+        if matrix==None:
+            if not hasattr(self,'ma'):
+                #import pdb; pdb.set_trace()
+                self.ma  = np.zeros( (self.ny,self.nx) )
+            matrix = self.ma
+        for i in range(inLayer.GetFeatureCount()):
+            inFeature = inLayer.GetFeature(i)
+            geom = inFeature.GetGeometryRef()
+            x = geom.GetX()
+            y = geom.GetY()
+            row, col = self.pixelNumber([x,y])
+            matrix[row,col] += inFeature.GetFieldAsDouble(field)
+        return matrix
 
     def updateMatrix(self,field):
         """create the ma attribute with values from pixelsets
