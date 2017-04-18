@@ -3,9 +3,9 @@
 
 import argparse
 import numpy
-import gdal
+from osgeo import gdal
 
-from gdalconst import GA_ReadOnly
+from osgeo.gdalconst import GA_ReadOnly
 
 class Raster:
     def __init__(self, su=None, infile=None, nodatavalue=None):
