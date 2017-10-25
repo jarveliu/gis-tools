@@ -492,12 +492,16 @@ class Raster:
     ny -- number of rows in raster
     pixelsets -- dict containing Pixelset objects, keys are Pixelset IDs.
     ma -- numpy array containing raster numerical values.
+    na -- numpy array containing number of values added to ma.
     """
     
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--rastergeometry', nargs=6,
+                        metavar=('x','y','dx','dy','nx','ny'),
                         default=[222000,7674000,1000,-1000,740,1570],
                         help='origin_x origin_y step_x step_y No_of_pixels_x No_of_pixels_y')
+    parser.add_argument('--toleratePointsOutside', dest='forgiving', action='store_true')
+    parser.add_argument('--statistics', dest='stats', action='store_true')
     parser.add_argument('outfile')
     def __init__(self, 
                  su = None,
@@ -517,6 +521,9 @@ class Raster:
         self.nx = int(su.rastergeometry[4]) 
         self.ny = int(su.rastergeometry[5]) 
 
+        self.forgiving = su.forgiving
+        self.stats = su.stats
+
         if hasattr(su,'filename') \
            or isinstance(su,argparse.Namespace) and su.__contains__('outfile'):
             self.filename = su.outfile
@@ -527,19 +534,33 @@ class Raster:
 
         self.pixelsets = dict()
 
-    def updateMatrixFromPointsLayer(self,inLayer,field,matrix=None):
+    def updateMatrixFromPointsLayer(self,inLayer,field,matrix=None,na=None):
         if matrix==None:
-            if not hasattr(self,'ma'):
+            if hasattr(self,'ma'):
+                if not hasattr(self,'na'):
+                    raise Exception("To provide statistics a source counter array is needed")
+            else:
                 #import pdb; pdb.set_trace()
-                self.ma  = np.zeros( (self.ny,self.nx) )
+                self.ma  = np.zeros( (self.ny,self.nx) , dtype=np.float)
+                if self.stats:
+                    self.na = np.zeros( (self.ny,self.nx) , dtype=np.uint16)
             matrix = self.ma
+        elif self.stats and nm==None and not hasattr(self,'na'):
+            raise Exception("To provide statistics a source counter array is needed")
+
         for i in range(inLayer.GetFeatureCount()):
             inFeature = inLayer.GetFeature(i)
             geom = inFeature.GetGeometryRef()
             x = geom.GetX()
             y = geom.GetY()
             row, col = self.pixelNumber([x,y])
-            matrix[row,col] += inFeature.GetFieldAsDouble(field)
+            try:
+                matrix[row,col] += inFeature.GetFieldAsDouble(field)
+                if self.stats:
+                    self.na[row,col] += 1
+            except IndexError:
+                if not self.forgiving:
+                    raise IndexError('point '+str(x)+','+str(y)+' is out of bounds for rasterize area')
         return matrix
 
     def updateMatrix(self,field):
@@ -558,17 +579,30 @@ class Raster:
                 self.ma[pixel.row][pixel.col] \
                     += pixel.getEnclosedArea(geom)*density
     
-    def printFile(self, matrix=None, filename=None):
+    def printFile(self, matrix=None, na=None, filename=None, printval="sum"):
         """print matrix values to an ascii raster file
 
         keyword arguments:
         matrix -- matrix to print, default is self.ma
+        na -- array with number of values summed in each pixel of matrix, default is self.na
         filename -- name of output file, default is self.filename
+        printval -- type of value to print, default is sum only option at the moment is 
+                    average, which is only available if self.stat.
         """
         if matrix == None:
             matrix = self.ma
+        if na == None and not printval=="sum":
+            na = self.na
         if filename == None:
             filename = self.filename
+        if printval == "average":
+            with  np.errstate(divide='ignore', invalid='ignore'):
+                output = np.true_divide(matrix,na)
+                output[output==np.inf] = 0
+                output = np.nan_to_num(output)
+        else:
+            output = matrix
+
         ofh = open(filename,'w')
         ofh.write("ncols        %d\n" % self.nx)
         ofh.write("nrows        %d\n" % self.ny)
@@ -579,9 +613,9 @@ class Raster:
             yll = self.oy + self.ny*self.sy
             ofh.write("yllcorner    %d\n" % yll)
         ofh.write("cellsize     %d\n" % self.sx)
-        for row in matrix:
+        for row in output:
             for val in row:
-                ofh.write(' %d' % val)
+                ofh.write(' %f' % val)
             ofh.write("\n")
         ofh.close()
     
